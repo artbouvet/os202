@@ -40,8 +40,13 @@ Par soucis de simplification, on supposera $N$ divisible par le nombre de tâche
 Afin de paralléliser le produit matrice–vecteur, on décide dans un premier temps de partitionner la matrice par un découpage par bloc de colonnes. Chaque tâche contiendra $N_{\textrm{loc}}$ colonnes de la matrice. 
 
 - Calculer en fonction du nombre de tâches la valeur de Nloc
+
+Pour une matrice de dimension N*N partitionnée en blocs de colonnes pour nbp processus, chaque processus reçoit Nloc = N/nbp colonnes.
+
 - Paralléliser le code séquentiel `matvec.py` en veillant à ce que chaque tâche n’assemble que la partie de la matrice utile à sa somme partielle du produit matrice-vecteur. On s’assurera que toutes les tâches à la fin du programme contiennent le vecteur résultat complet.
 - Calculer le speed-up obtenu avec une telle approche
+
+Speed-up : S  = Tsequentiel / Tparallèle
 
 ### b - Produit parallèle matrice-vecteur par ligne
 
@@ -57,9 +62,23 @@ Alice a parallélisé en partie un code sur machine à mémoire distribuée. Pou
 
 En utilisant la loi d’Amdhal, pouvez-vous prédire l’accélération maximale que pourra obtenir Alice avec son code (en considérant n ≫ 1) ?
 
+Lorsque n très grand devant 1, on a S = 1/(1-p).
+Si 90% du temps d'exécution est parallélisable, p=0.9 donc Smax = 1/0.1 = 10.
+Alice ne pourra donc jamais dépasser une accélération de 10, peu importe le nombre de noeuds utilisés.
+
 À votre avis, pour ce jeu de donné spécifique, quel nombre de nœuds de calcul semble-t-il raisonnable de prendre pour ne pas trop gaspiller de ressources CPU ?
+
+Pour n=10 : S(10) = 1/(0.1+0.9/10) = 5.26
+Pour n=20 : S(20) = 1/(0.1+0.9/20) = 6.9
+L'accélération commence donc à saturer entre n=10 et n=20. Un choix raisonnable serait donc entre ces 2 valeurs, au-delà on gaspillerait du CPU.
 
 En effectuant son cacul sur son calculateur, Alice s’aperçoit qu’elle obtient une accélération maximale de quatre en augmentant le nombre de nœuds de calcul pour son jeu spécifique de données.
 
 En doublant la quantité de donnée à traiter, et en supposant la complexité de l’algorithme parallèle linéaire, quelle accélération maximale peut espérer Alice en utilisant la loi de Gustafson ?
+
+Avait un speed-up de 4, Alice utilise 6 noeud après calculs.
+Loi de Gustafon : S(n)=n-(1-p)(n-1)
+S(6)=6-(1-0.9)(6-1)=5.5
+Si la quantité de données double alors n double aussi : S(12)=10.9
+En doublant la quantité de données, nous pouvons donc espérer une accélération d'environ 10.9.
 

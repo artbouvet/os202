@@ -1,11 +1,13 @@
 """
-Ce fichier contient le code du jeu de la vie avec mon travail de parallélisation naïve (1ère tentative).
+Ce fichier contient dans un premier temps le code du jeu de la vie avec mon travail de parallélisation naïve (1ère tentative).
 Il s'agit d'une approche synchrone de la parallélisation.
-"""
- 
+Puis cette 1ère version est améliorée pour une approche asynchrone.
 
-import pygame  as pg
-import numpy   as np
+Exécution avec : mpiexec -n 2 python game_of_life_para_naive.py 
+"""
+
+import pygame as pg
+import numpy as np
 from mpi4py import MPI
 
 
@@ -21,16 +23,22 @@ class Grille:
     Exemple :
        grid = Grille( (10,10), init_pattern=[(2,2),(0,2),(4,2),(2,0),(2,4)], color_life=pg.Color("red"), color_dead=pg.Color("black"))
     """
-    def __init__(self, dim, init_pattern=None, color_life=pg.Color("black"), color_dead=pg.Color("white")):
+    def __init__(self, process_id, total_procs, dim, init_pattern=None, color_life=pg.Color("black"), color_dead=pg.Color("white")):
         import random
         self.dimensions = dim
+        self.dim_part = (dim[0]//total_procs + (1 if process_id < dim[0]%total_procs else 0), dim[1])
+        self.debut_part = process_id * self.dim_part[0] + (dim[0]%total_procs if process_id >= dim[0]%total_procs else 0)
+
         if init_pattern is not None:
-            self.cells = np.zeros(self.dimensions, dtype=np.uint8)
-            indices_i = [v[0] for v in init_pattern]
-            indices_j = [v[1] for v in init_pattern]
-            self.cells[indices_i,indices_j] = 1
+            self.cells = np.zeros((self.dim_part[0]+2, self.dim_part[1]), dtype=np.uint8)
+            idx_i = [v[0]-self.debut_part+1 for v in init_pattern 
+                     if v[0] >= self.debut_part and v[0] < self.debut_part+self.dim_part[0]]
+            idx_j = [v[1] for v in init_pattern 
+                     if v[0] >= self.debut_part and v[0] < self.debut_part+self.dim_part[0]]
+            if len(idx_i) > 0:
+                self.cells[idx_i, idx_j] = 1
         else:
-            self.cells = np.random.randint(2, size=dim, dtype=np.uint8)
+            self.cells = np.random.randint(2, size=(self.dim_part[0]+2, self.dim_part[1]), dtype=np.uint8)
         self.col_life = color_life
         self.col_dead = color_dead
 
@@ -43,6 +51,17 @@ class Grille:
         diff_cells = (next_cells != self.cells)
         self.cells = next_cells
         return diff_cells
+    
+    def synchroniser_bordures(self, comm):
+        # gestion des cellules fantômes
+        req1 = comm.Irecv(self.cells[-1,:], source=(comm.Get_rank()+1)%comm.Get_size(), tag=101)
+        req2 = comm.Irecv(self.cells[0,:], source=(comm.Get_rank()+comm.Get_size()-1)%comm.Get_size(), tag=102)
+        
+        comm.Send(self.cells[-2,:], dest=(comm.Get_rank()+1)%comm.Get_size(), tag=102)
+        comm.Send(self.cells[1,:], dest=(comm.Get_rank()+comm.Get_size()-1)%comm.Get_size(), tag=101)
+        
+        req1.Wait()
+        req2.Wait()
 
 
 class App:
@@ -70,7 +89,7 @@ class App:
         self.colors = np.array([self.grid.col_dead[:-1], self.grid.col_life[:-1]])
 
     def draw(self):
-        surface = pg.surfarray.make_surface(self.colors[self.grid.cells.T])
+        surface = pg.surfarray.make_surface(self.colors[self.grid.cells[1:-1,:].T])
         surface = pg.transform.flip(surface, False, True)
         surface = pg.transform.scale(surface, (self.width, self.height))
         self.screen.blit(surface, (0,0))
@@ -89,7 +108,9 @@ if __name__ == '__main__':
     rank = comm.Get_rank()
     nbp = comm.Get_size()
 
-    pg.init()
+    processCom = comm.Split(rank != 0, rank)
+    print(f"rang global : {rank}, rang local : {processCom.Get_rank()}, nb de processus locaux : {processCom.Get_size()}")
+
     dico_patterns = { # Dimension et pattern dans un tuple
         'blinker' : ((5,5),[(2,1),(2,2),(2,3)]),
         'toad'    : ((6,6),[(2,2),(2,3),(2,4),(3,3),(3,4),(3,5)]),
@@ -114,62 +135,82 @@ if __name__ == '__main__':
     if len(sys.argv) > 3 :
         resx = int(sys.argv[2])
         resy = int(sys.argv[3])
-    #print(f"Pattern initial choisi : {choice}")
-    #print(f"resolution ecran : {resx,resy}")
+    print(f"Pattern initial choisi : {choice}")
+    print(f"resolution ecran : {resx,resy}")
     try:
         init_pattern = dico_patterns[choice]
     except KeyError:
         print("No such pattern. Available ones are:", dico_patterns.keys())
         exit(1)
-    grid = Grille(*init_pattern)
-    appli = App((resx, resy), grid)
 
-    loop = True
+    # Processus d'affichage
+    if rank == 0:
+        pg.init()
+        grid = Grille(0, 1, *init_pattern)
+        appli = App((resx, resy), grid)
+        
+        moy_temps_affichage = 0
+        nb_iterations = 0
+        loop = True
 
-    moy_temps_calcul = 0
-    moy_temps_affichage = 0
-    moy_temps = 0
-    nb_iterations = 0
-
-
-
-    while loop:
-        time.sleep(0.1) # A régler ou commenter pour vitesse maxi
-        nb_iterations += 1
-        if(rank==1):
+        while loop:
+            time.sleep(0.1) # A régler ou commenter pour vitesse maxi
+            comm.send(1, dest=1)
+            appli.grid.cells[1:-1,:] = comm.recv(source=1)
+            
             t1 = time.time()
-            diff = grid.compute_next_iteration()
-            t2 = time.time()
-            # Envoyer la grille mise à jour
-            comm.send(grid.cells, dest=0, tag=0)
-            # Attendre le statut de l'affichage
-            loop = comm.recv(source=0, tag=1)
-
-            moy_temps_calcul += (t2-t1)/nb_iterations
-
-        if(rank==0):
-            # Recevoir la grille mise à jour
-            grid.cells = comm.recv(source=1, tag=0)
-            t3 = time.time()
             appli.draw()
-            t4 = time.time()
-
+            t2 = time.time()
+            
+            nb_iterations += 1
+            moy_temps_affichage += (t2-t1)/nb_iterations
+            
             for event in pg.event.get():
                 if event.type == pg.QUIT:
                     loop = False
-
-            # Informer le processus de calcul de l'état
-            comm.send(loop, dest=1, tag=1)
-
-            moy_temps_affichage += (t4-t3)/nb_iterations
-
-        moy_temps = moy_temps_affichage + moy_temps_calcul
-        print(f"Pattern : {choice}, resolution : {resx,resy}, iterations : {nb_iterations}, moyenne temps : {moy_temps}\r")
-
-
-
+                    comm.send(-1, dest=1)
+                    pg.quit()
+            
+            print(f"Pattern : {choice}, resolution : {resx,resy}, iterations : {nb_iterations}, moyenne temps affichage : {moy_temps_affichage}\r", flush=True)
+    
+    # Processus de calcul
+    else:
+        grid = Grille(processCom.Get_rank(), processCom.Get_size(), *init_pattern)
+        grid.synchroniser_bordures(processCom)
         
+        moy_temps_calcul = 0
+        nb_iterations = 0
+        
+        cells_complete = None
+        if processCom.Get_rank() == 0:
+            cells_complete = np.zeros(init_pattern[0], dtype=np.uint8)
+        
+        taille_donnees = np.array(processCom.gather(grid.cells[1:-1,:].size, root=0))
+        
+        loop = True
+        while loop:
+            time.sleep(0.1) # A régler ou commenter pour vitesse maxi
+            if processCom.Get_rank() == 0 and comm.Iprobe(source=0):
+                signal = comm.recv(source=0)
+                if signal == -1:
+                    loop = False
+                else:
+                    processCom.Gatherv(grid.cells[1:-1,:], [cells_complete, taille_donnees], root=0)
+                    comm.send(cells_complete, dest=0)
+            
+            t1 = time.time()
+            grid.compute_next_iteration()
+            grid.synchroniser_bordures(processCom)
+            t2 = time.time()
+            
+            nb_iterations += 1
+            moy_temps_calcul += (t2-t1)/nb_iterations
+            
+            print(f"Pattern : {choice}, resolution : {resx,resy}, iterations : {nb_iterations}, moyenne temps calcul : {moy_temps_calcul}\r", flush=True)
+            
+            if processCom.Get_rank() != 0:
+                if processCom.Iprobe(source=0) and processCom.recv(source=0) == -1:
+                    loop = False
 
     MPI.Finalize()
-
-pg.quit()
+    pg.quit()

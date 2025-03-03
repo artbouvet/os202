@@ -1,6 +1,6 @@
 """
 Ce fichier contient le code du jeu de la vie avec mon travail d'analyse des temps de calcul et d'affichage permettant d'analyser les facteurs de ralentissement.
-"""
+""" 
 import pygame  as pg
 import numpy   as np
  
